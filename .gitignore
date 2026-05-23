@@ -1,0 +1,24 @@
+# Credenciais — NUNCA commitar
+.env
+
+# Ambiente virtual
+.venv/
+
+# Logs e dados temporários
+logs/*.log
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
