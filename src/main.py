@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Monitor de Acoes - executa diariamente e envia resumo via Telegram."""
 
 import sys
@@ -25,8 +25,8 @@ logger = logging.getLogger("main")
 def main():
     from src.cotacoes import buscar_todas_cotacoes, get_todos_tickers
     from src.noticias import buscar_todas_noticias
-    from src.analise import analisar_portfolio, gerar_resumo_geral
-    from src.notificacao import montar_mensagem, enviar_telegram
+    from src.analise import gerar_alertas
+    from src.notificacao import montar_mensagem, enviar_telegram, buscar_macro
 
     logger.info("=== Iniciando Monitor de Acoes ===")
 
@@ -38,14 +38,14 @@ def main():
                 len(amer) + len(bras), len(amer), len(bras))
     noticias = buscar_todas_noticias(amer, bras)
 
-    logger.info("Analisando com Groq...")
-    analises = analisar_portfolio(cotacoes, noticias)
+    logger.info("Gerando alertas com Groq...")
+    alertas = gerar_alertas(cotacoes, noticias)
 
-    logger.info("Gerando resumo geral...")
-    resumo = gerar_resumo_geral(cotacoes)
+    logger.info("Buscando dados macro...")
+    macro = buscar_macro()
 
     logger.info("Montando mensagem Telegram...")
-    mensagem = montar_mensagem(cotacoes, analises, resumo)
+    mensagem = montar_mensagem(cotacoes, alertas, macro)
 
     logger.info("Enviando via Telegram...")
     enviar_telegram(mensagem)

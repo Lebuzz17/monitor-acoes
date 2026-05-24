@@ -1,15 +1,17 @@
-"""
+﻿"""
 noticias.py - coleta e ranqueamento de noticias de multiplas fontes.
 
 Fontes:
   - Google News RSS  (todos os tickers)
   - Alpha Vantage    (americanos, 1 chamada batch, usa relevance_score proprio)
+  - Seeking Alpha    (americanos, RSS por ticker)
+  - Feeds gerais BR  (BrazilJournal, InfoMoney, MoneyTimes - pre-carregados 1x)
   - Reddit JSON API  (americanos: r/investing, r/stocks, r/ValueInvesting
                       brasileiros: r/investimentos, r/financas, filtra >= 10 upvotes)
 
 Score de relevancia:
   score_av  base = relevance_score Alpha Vantage (0-5)
-  +3  fonte confiavel (Reuters, Bloomberg, WSJ, Valor Economico, Infomoney...)
+  +3  fonte confiavel (Reuters, Bloomberg, WSJ, BrazilJournal, SeekingAlpha...)
   +2  titulo menciona o ticker ou nome da empresa diretamente
   +2  noticia das ultimas 12h  |  +1 ultimas 24h
   deduplicacao por hash do titulo normalizado (60 chars)
@@ -31,22 +33,22 @@ import feedparser
 logger = logging.getLogger(__name__)
 
 EMPRESA_MAP = {
-    "AAPL":     "Apple",
-    "UNH":      "UnitedHealth",
-    "AMZN":     "Amazon",
-    "GOOGL":    "Google Alphabet",
-    "V":        "Visa",
-    "MA":       "Mastercard",
-    "MSFT":     "Microsoft",
-    "JPM":      "JPMorgan",
-    "BAC":      "Bank of America",
-    "IVV":      "S&P 500 ETF",
-    "QQQ":      "Nasdaq ETF",
-    "GBTC":     "Bitcoin Grayscale",
-    "EIMI.L":   "Emerging Markets ETF",
-    "BBAS3.SA": "Banco do Brasil",
-    "BOVA11.SA":"Ibovespa ETF",
-    "ITUB4.SA": "Itau Unibanco",
+    "AAPL":      "Apple",
+    "UNH":       "UnitedHealth",
+    "AMZN":      "Amazon",
+    "GOOGL":     "Google Alphabet",
+    "V":         "Visa",
+    "MA":        "Mastercard",
+    "MSFT":      "Microsoft",
+    "JPM":       "JPMorgan",
+    "BAC":       "Bank of America",
+    "IVV":       "S&P 500 ETF",
+    "QQQ":       "Nasdaq ETF",
+    "GBTC":      "Bitcoin Grayscale",
+    "EIMI.L":    "Emerging Markets ETF",
+    "BBAS3.SA":  "Banco do Brasil",
+    "BOVA11.SA": "Ibovespa ETF",
+    "ITUB4.SA":  "Itau Unibanco",
     "VALE3.SA":  "Vale",
     "SMALL11.SA":"Small Cap Brasil",
     "PRIO3.SA":  "PetroRio",
@@ -56,7 +58,15 @@ FONTES_CONFIAVEIS = {
     "reuters", "bloomberg", "wsj", "wall street journal",
     "financial times", "ft.com", "cnbc", "marketwatch",
     "valor economico", "valor econômico", "infomoney",
-    "exame invest", "money times", "investing.com",
+    "exame invest", "money times", "moneytimes",
+    "brazil journal", "braziljournal",
+    "seekingalpha", "seeking alpha", "investing.com",
+}
+
+FEEDS_GERAIS_BR = {
+    "braziljournal": "https://braziljournal.com/feed/",
+    "infomoney":     "https://www.infomoney.com.br/feed/",
+    "moneytimes":    "https://moneytimes.com.br/feed/",
 }
 
 SUBREDDITS_AMER = ["investing", "stocks", "ValueInvesting"]
@@ -66,7 +76,11 @@ ORIGEM_LABEL = {
     "alpha_vantage": "Alpha Vantage",
     "reddit":        "Reddit",
     "google_news":   "Google News",
+    "seeking_alpha": "Seeking Alpha",
+    "feed_br":       "Feed BR",
 }
+
+_HEADERS_RSS = {"User-Agent": "Mozilla/5.0 (compatible; MonitorAcoes/1.0)"}
 
 
 def _limpar_ticker(ticker):
@@ -100,8 +114,9 @@ def _score_noticia(noticia, ticker):
 
     titulo = noticia.get("titulo", "").lower()
     ticker_clean = _limpar_ticker(ticker).lower()
+    ticker_base  = ticker.split(".")[0].lower()
     empresa = EMPRESA_MAP.get(ticker, "").lower()
-    if ticker_clean in titulo or (empresa and empresa in titulo):
+    if ticker_clean in titulo or ticker_base in titulo or (empresa and empresa in titulo):
         score += 2
 
     ts = noticia.get("publicado_ts")
@@ -161,11 +176,6 @@ def _google_news(ticker, max_itens=8):
 
 
 def _alpha_vantage_batch(tickers, max_itens=50):
-    """
-    Uma unica chamada de API para todos os tickers americanos.
-    Retorna {ticker_original: [noticias]}.
-    Free tier: 25 req/dia - batch evita estourar o limite.
-    """
     api_key = os.getenv("ALPHA_VANTAGE_KEY", "")
     if not api_key or api_key.startswith("sua_"):
         logger.info("ALPHA_VANTAGE_KEY nao configurada, pulando Alpha Vantage")
@@ -225,8 +235,78 @@ def _alpha_vantage_batch(tickers, max_itens=50):
         return {}
 
 
+def _seeking_alpha(ticker, max_itens=10):
+    """Busca noticias do Seeking Alpha RSS para um ticker americano."""
+    ticker_clean = _limpar_ticker(ticker)
+    url = "https://seekingalpha.com/symbol/{}.xml".format(ticker_clean)
+    try:
+        r = requests.get(url, headers=_HEADERS_RSS, timeout=10)
+        feed = feedparser.parse(r.text)
+        noticias = []
+        for entry in feed.entries[:max_itens]:
+            titulo = entry.get("title", "").strip()
+            if not titulo:
+                continue
+            noticias.append({
+                "titulo":       titulo,
+                "fonte":        "seekingalpha",
+                "link":         entry.get("link", ""),
+                "publicado_ts": _parse_ts(entry.get("published", "")),
+                "origem":       "seeking_alpha",
+                "score_av":     0.0,
+            })
+        return noticias
+    except Exception as exc:
+        logger.error("Seeking Alpha %s: %s", ticker, exc)
+        return []
+
+
+def _fetch_feeds_gerais():
+    """Pre-carrega os feeds gerais de noticias BR uma unica vez por execucao."""
+    resultado = {}
+    for nome, url in FEEDS_GERAIS_BR.items():
+        try:
+            r = requests.get(url, headers=_HEADERS_RSS, timeout=10)
+            feed = feedparser.parse(r.text)
+            entries = []
+            for entry in feed.entries[:40]:
+                titulo = entry.get("title", "").strip()
+                if not titulo:
+                    continue
+                entries.append({
+                    "titulo":       titulo,
+                    "fonte":        nome,
+                    "link":         entry.get("link", ""),
+                    "publicado_ts": _parse_ts(entry.get("published", "")),
+                    "origem":       "feed_br",
+                    "score_av":     0.0,
+                })
+            resultado[nome] = entries
+            logger.info("Feed geral %s: %d entradas", nome, len(entries))
+        except Exception as exc:
+            logger.error("Feed geral %s: %s", nome, exc)
+            resultado[nome] = []
+    return resultado
+
+
+def _filtrar_feed_geral(feeds_gerais, ticker):
+    """Retorna entradas dos feeds gerais que mencionam o ticker ou empresa."""
+    ticker_clean = _limpar_ticker(ticker).lower()
+    ticker_base  = ticker.split(".")[0].lower()
+    empresa = EMPRESA_MAP.get(ticker, "").lower()
+
+    resultado = []
+    for entries in feeds_gerais.values():
+        for entry in entries:
+            titulo = entry.get("titulo", "").lower()
+            if (ticker_clean in titulo
+                    or ticker_base in titulo
+                    or (empresa and len(empresa) > 3 and empresa in titulo)):
+                resultado.append(dict(entry))
+    return resultado
+
+
 def _reddit(ticker, eh_americano=True, max_por_sub=5):
-    """Busca posts com >= 10 upvotes nos subreddits relevantes."""
     ticker_clean = _limpar_ticker(ticker)
     empresa = EMPRESA_MAP.get(ticker, ticker_clean)
     query = urllib.parse.quote("{} {}".format(ticker_clean, empresa))
@@ -283,7 +363,7 @@ def _reddit(ticker, eh_americano=True, max_por_sub=5):
     return noticias
 
 
-def buscar_noticias_ticker(ticker, eh_americano=True, av_cache=None, top_n=5):
+def buscar_noticias_ticker(ticker, eh_americano=True, av_cache=None, feeds_gerais=None, top_n=5):
     """Agrega, deduplica, pontua e devolve top_n noticias ranqueadas."""
     todas = []
 
@@ -292,6 +372,13 @@ def buscar_noticias_ticker(ticker, eh_americano=True, av_cache=None, top_n=5):
 
     if av_cache and ticker in av_cache:
         todas += av_cache[ticker]
+
+    if eh_americano:
+        todas += _seeking_alpha(ticker)
+        time.sleep(0.4)
+    else:
+        if feeds_gerais:
+            todas += _filtrar_feed_geral(feeds_gerais, ticker)
 
     todas += _reddit(ticker, eh_americano=eh_americano)
 
@@ -316,17 +403,20 @@ def buscar_todas_noticias(amer_tickers, bras_tickers):
     logger.info("Alpha Vantage: batch para %d tickers americanos...", len(amer_tickers))
     av_cache = _alpha_vantage_batch(amer_tickers)
 
+    logger.info("Pre-carregando feeds gerais BR...")
+    feeds_gerais = _fetch_feeds_gerais()
+
     resultado = {}
 
     for ticker in amer_tickers:
         resultado[ticker] = buscar_noticias_ticker(
-            ticker, eh_americano=True, av_cache=av_cache
+            ticker, eh_americano=True, av_cache=av_cache, feeds_gerais=None
         )
         time.sleep(0.5)
 
     for ticker in bras_tickers:
         resultado[ticker] = buscar_noticias_ticker(
-            ticker, eh_americano=False, av_cache=None
+            ticker, eh_americano=False, av_cache=None, feeds_gerais=feeds_gerais
         )
         time.sleep(0.5)
 
