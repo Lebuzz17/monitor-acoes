@@ -1,11 +1,15 @@
 ﻿"""
-analise.py - analise de sentimento e geracao de alertas via Groq LLaMA.
+analise.py - analise de sentimento e geracao de alertas/contexto via Groq LLaMA.
 
 Exporta:
   gerar_alertas(cotacoes, noticias) -> dict
     {mercado: [{ticker, texto}]}
-    - candidatos: tickers com abs(variacao) >= 1.0%
-    - Groq filtra e escreve alertas de 2-3 frases para os mais relevantes
+    Candidatos: |variacao| >= 1.0%. Groq filtra para >= 1.5% ou news negativas.
+    Tickers sem noticias recentes (lista vazia) sao ignorados pelo Groq.
+
+  gerar_contexto_macro(noticias_macro) -> str
+    2 frases de contexto macro baseadas APENAS nas noticias fornecidas.
+    Retorna "" se sem noticias.
 """
 
 import os
@@ -23,6 +27,7 @@ ORIGEM_LABEL = {
     "google_news":   "Google News",
     "seeking_alpha": "Seeking Alpha",
     "feed_br":       "Feed BR",
+    "macro_feed":    "Macro Feed",
 }
 
 
@@ -68,17 +73,29 @@ def gerar_alertas(cotacoes, noticias):
 
         dados_prompt = []
         for ticker, d in candidatos.items():
+            news_list = _formatar_noticias(ticker, noticias)
+            if not news_list:
+                logger.info("Sem noticias recentes para %s — alerta omitido", ticker)
+                continue
             dados_prompt.append({
-                "ticker":      ticker,
+                "ticker":       ticker,
                 "variacao_pct": round(d["variacao"], 2),
-                "noticias":    _formatar_noticias(ticker, noticias),
+                "noticias":     news_list,
             })
+
+        if not dados_prompt:
+            logger.info("Alertas %s: candidatos sem noticias recentes, nenhum alerta", mercado)
+            resultado[mercado] = []
+            continue
 
         prompt = (
             "Voce e um analista financeiro senior. Para cada ativo abaixo com variacao >= 1%, "
-            "escreva um alerta em 2-3 frases em portugues explicando o movimento do dia e seu contexto.\n"
-            "Inclua apenas ativos com movimentos realmente relevantes (>= 1.5% ou com noticias negativas impactantes).\n"
-            "Seja direto, use o ticker exato, mencione o valor percentual e a causa principal.\n\n"
+            "escreva um alerta em 2-3 frases em portugues explicando o movimento e seu contexto.\n\n"
+            "REGRAS IMPORTANTES:\n"
+            "- Inclua APENAS ativos com variacao >= 1.5% OU com noticias negativas impactantes\n"
+            "- Se a lista 'noticias' de um ativo estiver vazia, NAO gere alerta para ele\n"
+            "- Nao invente informacoes que nao estejam nas noticias fornecidas\n"
+            "- Use o ticker exato, mencione o percentual e a causa principal\n\n"
             "Mercado: {}\n"
             "Candidatos:\n{}\n\n"
             "Responda APENAS com JSON valido, sem markdown:\n"
@@ -105,3 +122,47 @@ def gerar_alertas(cotacoes, noticias):
             resultado[mercado] = []
 
     return resultado
+
+
+def gerar_contexto_macro(noticias_macro):
+    """
+    Gera 2 frases de contexto macro baseadas APENAS nas noticias fornecidas.
+    Retorna string vazia se sem noticias suficientes.
+    """
+    if not noticias_macro:
+        logger.info("Contexto macro: sem noticias disponiveis (filtro 48h)")
+        return ""
+
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+    titulos = [
+        "[{}] {}".format(n.get("fonte", "web"), n.get("titulo", ""))
+        for n in noticias_macro[:8]
+        if n.get("titulo")
+    ]
+
+    if not titulos:
+        return ""
+
+    prompt = (
+        "Com base APENAS nas seguintes noticias macroeconômicas recentes, "
+        "redija exatamente 2 frases de contexto macro relevantes para um investidor brasileiro. "
+        "Nao invente informacoes que nao estejam explicitamente nas noticias abaixo. "
+        "Se as noticias nao permitirem um comentario util e embasado, "
+        "responda apenas: Dados insuficientes para contexto macro.\n\n"
+        "Noticias disponíveis:\n{}"
+    ).format("\n".join("- " + t for t in titulos))
+
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=220,
+        )
+        texto = resp.choices[0].message.content.strip()
+        logger.info("Contexto macro gerado: %d chars", len(texto))
+        return texto
+    except Exception as exc:
+        logger.error("Erro Groq contexto macro: %s", exc)
+        return ""

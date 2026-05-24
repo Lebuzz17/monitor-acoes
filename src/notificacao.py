@@ -2,9 +2,10 @@
 notificacao.py - formata e envia a mensagem diaria via Telegram.
 
 Formato 3 blocos:
-  Bloco 1 - SEMAFORO: semaforo por cor (verde/cinza/vermelho) por variacao
-  Bloco 2 - ALERTAS:  textos curtos gerados pelo Groq para movimentos relevantes
-  Bloco 3 - MACRO:    S&P, Ibovespa, DXY, Treasury 10y, USD/BRL
+  Bloco 1 - SEMAFORO: por cor (verde >+0.5%, cinza, vermelho <-0.5%)
+             Ativos sem dado: "TICKER s/d"
+  Bloco 2 - ALERTAS:  textos Groq para movimentos >= 1.5% ou news negativas
+  Bloco 3 - MACRO:    dados numericos + contexto gerado pelo Groq
 """
 
 import os
@@ -52,15 +53,15 @@ def _fmt_var_pct(variacao):
 
 
 def _fmt_br_large(valor):
-    """Formata inteiro grande no padrao brasileiro: 137.245 ou 5.847."""
+    """Inteiro grande no padrao brasileiro: 137.245"""
     if valor is None:
         return "N/D"
-    s = "{:,.0f}".format(abs(valor))          # "137,245"
-    return ("-" if valor < 0 else "") + s.replace(",", ".")   # "137.245"
+    s = "{:,.0f}".format(abs(valor))
+    return ("-" if valor < 0 else "") + s.replace(",", ".")
 
 
 def _fmt_br_small(valor, decimais=2):
-    """Formata numero pequeno no padrao brasileiro: 104,23."""
+    """Numero pequeno no padrao brasileiro: 104,23"""
     if valor is None:
         return "N/D"
     return "{:.{}f}".format(valor, decimais).replace(".", ",")
@@ -113,18 +114,22 @@ def _cor_semaforo(variacao):
 
 
 def _fmt_ativo_semaforo(ticker, variacao):
+    """
+    Formata ticker para o semaforo.
+    CORREÇÃO 3: exibe 's/d' quando variacao é None (sem dado).
+    """
     t_clean = ticker.replace(".SA", "").replace(".L", "")
     if variacao is None:
-        return t_clean
+        return "{} s/d".format(t_clean)
     sinal = "+" if variacao > 0 else ""
     return "{} {}{:.1f}%".format(t_clean, sinal, variacao)
 
 
 def _linha_semaforo(ativos_dict):
-    """Agrupa ativos por cor, ordena por variacao desc, retorna linhas HTML."""
-    verde     = []
-    cinza     = []
-    vermelho  = []
+    """Agrupa por cor, ordena por variacao desc dentro de cada grupo."""
+    verde    = []
+    cinza    = []
+    vermelho = []
     for ticker, d in ativos_dict.items():
         var = d.get("variacao")
         texto = _fmt_ativo_semaforo(ticker, var)
@@ -151,12 +156,13 @@ def _linha_semaforo(ativos_dict):
 
 
 def _linha_etfs(ativos_dict):
-    """Uma linha compacta para ETFs com emoji individual."""
+    """Linha compacta para ETFs com emoji individual."""
     items = sorted(ativos_dict.items(), key=lambda x: x[1].get("variacao") or 0, reverse=True)
     partes = []
     for ticker, d in items:
         var = d.get("variacao")
-        emoji = "🟢" if _cor_semaforo(var) == "verde" else ("🔴" if _cor_semaforo(var) == "vermelho" else "⚪")
+        cor = _cor_semaforo(var)
+        emoji = "🟢" if cor == "verde" else ("🔴" if cor == "vermelho" else "⚪")
         partes.append("{} {}".format(emoji, _fmt_ativo_semaforo(ticker, var)))
     return "ETFs: " + "  ".join(partes)
 
@@ -165,8 +171,8 @@ def _bloco_semaforo(cotacoes):
     linhas = ["<b>🚦 SEMÁFORO</b>", ""]
 
     amer = cotacoes.get("americano", {})
-    acoes_us  = {t: d for t, d in amer.items() if t not in ETFS_US}
-    etfs_us   = {t: d for t, d in amer.items() if t in ETFS_US}
+    acoes_us = {t: d for t, d in amer.items() if t not in ETFS_US}
+    etfs_us  = {t: d for t, d in amer.items() if t in ETFS_US}
 
     if acoes_us:
         linhas.append("<b>🇺🇸 Ações Americanas</b>")
@@ -217,7 +223,7 @@ def _bloco_alertas(cotacoes, alertas):
                 ticker_clean, preco_s, var_s, emoji
             )
         )
-        linhas.append(html.escape(texto))
+        linhas.append(html.escape(texto, quote=False))
         linhas.append("")
 
     return linhas
@@ -225,18 +231,16 @@ def _bloco_alertas(cotacoes, alertas):
 
 # ─── Macro ───────────────────────────────────────────────────────────────────
 
-def _bloco_macro(macro):
+def _bloco_macro(macro, contexto_macro=""):
     linhas = ["<b>🌍 MACRO</b>", ""]
 
     def _linha(nome, m):
         preco = m.get("preco")
         var   = m.get("variacao")
         emoji = _emoji_var(var)
-        var_s = "({}{})".format(_fmt_var_pct(var), " " + emoji if emoji else "") if var is not None else ""
+        var_s = "({} {})".format(_fmt_var_pct(var), emoji).strip() if var is not None else ""
 
-        if nome == "S&P 500":
-            p_s = _fmt_br_large(preco)
-        elif nome == "Ibovespa":
+        if nome in ("S&P 500", "Ibovespa"):
             p_s = _fmt_br_large(preco)
         elif nome == "Treasury 10y":
             p_s = "{}%".format(_fmt_br_small(preco, 2)) if preco is not None else "N/D"
@@ -250,12 +254,16 @@ def _bloco_macro(macro):
     for nome, m in macro.items():
         linhas.append(_linha(nome, m))
 
+    if contexto_macro:
+        linhas.append("")
+        linhas.append("<i>{}</i>".format(html.escape(contexto_macro, quote=False)))
+
     return linhas
 
 
 # ─── Mensagem principal ───────────────────────────────────────────────────────
 
-def montar_mensagem(cotacoes, alertas, macro):
+def montar_mensagem(cotacoes, alertas, macro, contexto_macro=""):
     agora = datetime.now(TZ_BR)
     cabecalho = [
         "<b>📊 MONITOR DE AÇÕES — {}</b>".format(agora.strftime("%d/%m/%Y %H:%M")),
@@ -276,7 +284,7 @@ def montar_mensagem(cotacoes, alertas, macro):
         + sep
         + _bloco_alertas(cotacoes, alertas)
         + sep
-        + _bloco_macro(macro)
+        + _bloco_macro(macro, contexto_macro)
         + rodape
     )
 

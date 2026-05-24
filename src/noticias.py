@@ -1,21 +1,15 @@
 ﻿"""
 noticias.py - coleta e ranqueamento de noticias de multiplas fontes.
 
-Fontes:
-  - Google News RSS  (todos os tickers)
-  - Alpha Vantage    (americanos, 1 chamada batch, usa relevance_score proprio)
-  - Seeking Alpha    (americanos, RSS por ticker)
-  - Feeds gerais BR  (BrazilJournal, InfoMoney, MoneyTimes - pre-carregados 1x)
-  - Reddit JSON API  (americanos: r/investing, r/stocks, r/ValueInvesting
-                      brasileiros: r/investimentos, r/financas, filtra >= 10 upvotes)
+Fontes de portfolio:
+  - Google News RSS, Alpha Vantage batch, Seeking Alpha (US), Feeds gerais BR, Reddit
 
-Score de relevancia:
-  score_av  base = relevance_score Alpha Vantage (0-5)
-  +3  fonte confiavel (Reuters, Bloomberg, WSJ, BrazilJournal, SeekingAlpha...)
-  +2  titulo menciona o ticker ou nome da empresa diretamente
-  +2  noticia das ultimas 12h  |  +1 ultimas 24h
-  deduplicacao por hash do titulo normalizado (60 chars)
-  retorna top 5 por score_final
+Fontes macro dedicadas (buscar_noticias_macro):
+  - Fed, WSJ Markets, Investing.com, FT Markets, Brazil Journal, MoneyTimes
+
+Filtro de qualidade:
+  - Noticias com mais de 48h sao descartadas antes do scoring
+  - Score: +3 fonte confiavel, +2 ticker/empresa no titulo, +2 ultimas 12h, +1 ultimas 24h
 """
 
 import os
@@ -24,7 +18,7 @@ import time
 import logging
 import hashlib
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 
 import requests
@@ -69,6 +63,20 @@ FEEDS_GERAIS_BR = {
     "moneytimes":    "https://moneytimes.com.br/feed/",
 }
 
+FEEDS_MACRO = {
+    "fed":           "https://www.federalreserve.gov/feeds/press_all.xml",
+    "wsj_markets":   "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+    "investing_com": "https://www.investing.com/rss/news_25.rss",
+    "ft_markets":    "https://www.ft.com/markets?format=rss",
+    "braziljournal": "https://braziljournal.com/feed/",
+    "moneytimes":    "https://moneytimes.com.br/feed/",
+}
+
+FONTES_MACRO_CONFIAVEIS = {
+    "fed", "wsj_markets", "ft_markets", "investing_com",
+    "braziljournal", "moneytimes",
+}
+
 SUBREDDITS_AMER = ["investing", "stocks", "ValueInvesting"]
 SUBREDDITS_BRAS = ["investimentos", "financas"]
 
@@ -78,16 +86,20 @@ ORIGEM_LABEL = {
     "google_news":   "Google News",
     "seeking_alpha": "Seeking Alpha",
     "feed_br":       "Feed BR",
+    "macro_feed":    "Macro Feed",
 }
 
 _HEADERS_RSS = {"User-Agent": "Mozilla/5.0 (compatible; MonitorAcoes/1.0)"}
 
+
+# ─── Helpers base ─────────────────────────────────────────────────────────────
 
 def _limpar_ticker(ticker):
     return ticker.replace(".SA", "").replace(".L", "")
 
 
 def _parse_ts(raw):
+    """Converte string de data em datetime UTC-aware. Retorna None se invalido."""
     if not raw:
         return None
     try:
@@ -100,9 +112,30 @@ def _parse_ts(raw):
     except Exception:
         pass
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        # Garantir que seja UTC-aware
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except Exception:
         return None
+
+
+def _filtrar_48h(noticias):
+    """Remove noticias comprovadamente com mais de 48h. Mantem timestamp None."""
+    limite = datetime.now(timezone.utc) - timedelta(hours=48)
+    resultado = []
+    for n in noticias:
+        ts = n.get("publicado_ts")
+        if ts is None:
+            resultado.append(n)
+            continue
+        # Garantir que ts seja timezone-aware
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= limite:
+            resultado.append(n)
+    return resultado
 
 
 def _score_noticia(noticia, ticker):
@@ -142,6 +175,8 @@ def _deduplicar(noticias):
     return resultado
 
 
+# ─── Fontes de noticias por ticker ───────────────────────────────────────────
+
 def _google_news(ticker, max_itens=8):
     nome = _limpar_ticker(ticker)
     empresa = EMPRESA_MAP.get(ticker, "")
@@ -178,7 +213,6 @@ def _google_news(ticker, max_itens=8):
 def _alpha_vantage_batch(tickers, max_itens=50):
     api_key = os.getenv("ALPHA_VANTAGE_KEY", "")
     if not api_key or api_key.startswith("sua_"):
-        logger.info("ALPHA_VANTAGE_KEY nao configurada, pulando Alpha Vantage")
         return {}
 
     limpos = [_limpar_ticker(t) for t in tickers]
@@ -236,7 +270,6 @@ def _alpha_vantage_batch(tickers, max_itens=50):
 
 
 def _seeking_alpha(ticker, max_itens=10):
-    """Busca noticias do Seeking Alpha RSS para um ticker americano."""
     ticker_clean = _limpar_ticker(ticker)
     url = "https://seekingalpha.com/symbol/{}.xml".format(ticker_clean)
     try:
@@ -262,7 +295,6 @@ def _seeking_alpha(ticker, max_itens=10):
 
 
 def _fetch_feeds_gerais():
-    """Pre-carrega os feeds gerais de noticias BR uma unica vez por execucao."""
     resultado = {}
     for nome, url in FEEDS_GERAIS_BR.items():
         try:
@@ -290,7 +322,6 @@ def _fetch_feeds_gerais():
 
 
 def _filtrar_feed_geral(feeds_gerais, ticker):
-    """Retorna entradas dos feeds gerais que mencionam o ticker ou empresa."""
     ticker_clean = _limpar_ticker(ticker).lower()
     ticker_base  = ticker.split(".")[0].lower()
     empresa = EMPRESA_MAP.get(ticker, "").lower()
@@ -326,7 +357,6 @@ def _reddit(ticker, eh_americano=True, max_por_sub=5):
                 time.sleep(2)
                 continue
             if resp.status_code != 200:
-                logger.debug("Reddit r/%s: HTTP %d", sub, resp.status_code)
                 time.sleep(0.5)
                 continue
 
@@ -354,17 +384,17 @@ def _reddit(ticker, eh_americano=True, max_por_sub=5):
                 count += 1
                 if count >= max_por_sub:
                     break
-
             time.sleep(0.6)
-
         except Exception as exc:
             logger.error("Reddit r/%s (%s): %s", sub, ticker, exc)
 
     return noticias
 
 
+# ─── API publica: noticias por ticker ─────────────────────────────────────────
+
 def buscar_noticias_ticker(ticker, eh_americano=True, av_cache=None, feeds_gerais=None, top_n=5):
-    """Agrega, deduplica, pontua e devolve top_n noticias ranqueadas."""
+    """Agrega, filtra 48h, deduplica, pontua e devolve top_n noticias."""
     todas = []
 
     todas += _google_news(ticker)
@@ -385,6 +415,8 @@ def buscar_noticias_ticker(ticker, eh_americano=True, av_cache=None, feeds_gerai
     if not todas:
         return []
 
+    # CORREÇÃO 1: filtrar noticias com mais de 48h antes de pontuar
+    todas = _filtrar_48h(todas)
     todas = _deduplicar(todas)
 
     for n in todas:
@@ -394,7 +426,7 @@ def buscar_noticias_ticker(ticker, eh_americano=True, av_cache=None, feeds_gerai
     top = todas[:top_n]
 
     origens = [ORIGEM_LABEL.get(n["origem"], n["origem"]) for n in top]
-    logger.info("%s: %d noticias selecionadas %s", ticker, len(top), origens)
+    logger.info("%s: %d noticias recentes (48h) %s", ticker, len(top), origens)
     return top
 
 
@@ -421,3 +453,57 @@ def buscar_todas_noticias(amer_tickers, bras_tickers):
         time.sleep(0.5)
 
     return resultado
+
+
+# ─── API publica: noticias macro ─────────────────────────────────────────────
+
+def buscar_noticias_macro(max_total=8):
+    """
+    Busca noticias macro de fontes dedicadas (Fed, WSJ, FT, BrazilJournal...).
+    Filtra 48h. Retorna top N por score.
+    """
+    todas = []
+    for nome, url in FEEDS_MACRO.items():
+        try:
+            r = requests.get(url, headers=_HEADERS_RSS, timeout=12)
+            feed = feedparser.parse(r.text)
+            count = 0
+            for entry in feed.entries[:25]:
+                titulo = entry.get("title", "").strip()
+                if not titulo:
+                    continue
+                todas.append({
+                    "titulo":       titulo,
+                    "fonte":        nome,
+                    "link":         entry.get("link", ""),
+                    "publicado_ts": _parse_ts(entry.get("published", "")),
+                    "origem":       "macro_feed",
+                    "score_av":     0.0,
+                })
+                count += 1
+            logger.info("Macro feed %s: %d coletadas", nome, count)
+        except Exception as exc:
+            logger.error("Macro feed %s: %s", nome, exc)
+        time.sleep(0.4)
+
+    todas = _filtrar_48h(todas)
+    todas = _deduplicar(todas)
+
+    for n in todas:
+        score = 0.0
+        if n.get("fonte") in FONTES_MACRO_CONFIAVEIS:
+            score += 3
+        ts = n.get("publicado_ts")
+        if ts:
+            ts_utc = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+            horas = (datetime.now(timezone.utc) - ts_utc).total_seconds() / 3600
+            if horas <= 12:
+                score += 2
+            elif horas <= 24:
+                score += 1
+        n["score_final"] = score
+
+    todas.sort(key=lambda x: x["score_final"], reverse=True)
+    top = todas[:max_total]
+    logger.info("Noticias macro: %d selecionadas de %d apos filtro 48h", len(top), len(todas))
+    return top
