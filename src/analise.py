@@ -8,8 +8,14 @@ logger = logging.getLogger(__name__)
 MODEL = "llama-3.3-70b-versatile"
 EMOJI = {"POSITIVO": "✅", "NEUTRO": "⚠️", "NEGATIVO": "🔴"}
 
+ORIGEM_LABEL = {
+    "alpha_vantage": "Alpha Vantage",
+    "reddit":        "Reddit",
+    "google_news":   "Google News",
+}
 
-def _extrair_json(texto: str) -> dict:
+
+def _extrair_json(texto):
     match = re.search(r"\{.*\}", texto, re.DOTALL)
     if match:
         try:
@@ -19,13 +25,23 @@ def _extrair_json(texto: str) -> dict:
     return {}
 
 
-def analisar_mercado(nome: str, cotacoes_mercado: dict, noticias: dict) -> dict:
+def _formatar_noticias(ticker, noticias):
+    """Retorna ate 5 noticias com rotulo de origem para o prompt do Groq."""
+    items = noticias.get(ticker, [])[:5]
+    return [
+        "[{}] {}".format(ORIGEM_LABEL.get(n.get("origem", ""), "Web"), n["titulo"])
+        for n in items
+        if n.get("titulo")
+    ]
+
+
+def analisar_mercado(nome, cotacoes_mercado, noticias):
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-    dados_prompt = []
-    for ticker, _ in cotacoes_mercado.items():
-        titulos = [n["titulo"] for n in noticias.get(ticker, [])[:4] if n.get("titulo")]
-        dados_prompt.append({"ticker": ticker, "noticias": titulos})
+    dados_prompt = [
+        {"ticker": t, "noticias": _formatar_noticias(t, noticias)}
+        for t in cotacoes_mercado
+    ]
 
     if not any(d["noticias"] for d in dados_prompt):
         return {
@@ -34,15 +50,16 @@ def analisar_mercado(nome: str, cotacoes_mercado: dict, noticias: dict) -> dict:
         }
 
     prompt = (
-        f"Voce e um analista financeiro. Analise as noticias para cada ativo do mercado {nome}.\n\n"
+        "Voce e um analista financeiro senior. Analise as noticias para cada ativo do mercado {}.\n"
+        "As noticias vem de Alpha Vantage, Reddit e Google News - considere a fonte ao avaliar.\n\n"
         "Para cada ticker retorne:\n"
-        '- sentimento: "POSITIVO", "NEUTRO" ou "NEGATIVO"\n'
-        "- top_noticias: lista com os 3 titulos mais relevantes\n"
-        "- resumo: uma frase em portugues\n\n"
-        f"Dados:\n{json.dumps(dados_prompt, ensure_ascii=False)}\n\n"
-        "Responda APENAS com JSON valido, sem texto adicional:\n"
-        '{"TICKER": {"sentimento": "...", "top_noticias": [...], "resumo": "..."}, ...}'
-    )
+        "- sentimento: POSITIVO, NEUTRO ou NEGATIVO\n"
+        "- top_noticias: os 3 titulos mais relevantes (sem o prefixo de fonte)\n"
+        "- resumo: uma frase objetiva em portugues\n\n"
+        "Dados:\n{}\n\n"
+        "Responda APENAS com JSON valido:\n"
+        '{{"TICKER": {{"sentimento": "...", "top_noticias": [...], "resumo": "..."}}, ...}}'
+    ).format(nome, json.dumps(dados_prompt, ensure_ascii=False))
 
     try:
         resp = client.chat.completions.create(
@@ -83,7 +100,7 @@ def analisar_mercado(nome: str, cotacoes_mercado: dict, noticias: dict) -> dict:
         }
 
 
-def analisar_portfolio(cotacoes: dict, noticias: dict) -> dict:
+def analisar_portfolio(cotacoes, noticias):
     resultado = {}
     for mercado, ativos in cotacoes.items():
         logger.info("Analisando mercado: %s", mercado)
@@ -91,18 +108,16 @@ def analisar_portfolio(cotacoes: dict, noticias: dict) -> dict:
     return resultado
 
 
-def gerar_resumo_geral(cotacoes: dict) -> str:
+def gerar_resumo_geral(cotacoes):
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-    linhas = []
-    for ativos in cotacoes.values():
-        for ticker, d in ativos.items():
-            if d.get("variacao") is not None:
-                linhas.append(f"{ticker}: {d['variacao']:+.2f}%")
-
+    linhas = [
+        "{}: {:+.2f}%".format(ticker, d["variacao"])
+        for ativos in cotacoes.values()
+        for ticker, d in ativos.items()
+        if d.get("variacao") is not None
+    ]
     if not linhas:
         return "Nao foi possivel gerar o resumo do dia."
-
     prompt = (
         "Com base nas variacoes abaixo, escreva um resumo financeiro do dia em 2-3 frases em portugues.\n"
         "Destaque os maiores ganhos e perdas. Seja direto.\n\n"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Monitor de Acoes — executa diariamente e envia resumo via Telegram."""
+"""Monitor de Acoes - executa diariamente e envia resumo via Telegram."""
 
 import sys
 import logging
@@ -34,10 +34,9 @@ def main():
     cotacoes = buscar_todas_cotacoes()
 
     amer, bras = get_todos_tickers()
-    todos = amer + bras
-
-    logger.info("Buscando noticias (%d tickers)...", len(todos))
-    noticias = buscar_todas_noticias(todos)
+    logger.info("Buscando noticias (%d tickers: %d US + %d BR)...",
+                len(amer) + len(bras), len(amer), len(bras))
+    noticias = buscar_todas_noticias(amer, bras)
 
     logger.info("Analisando com Groq...")
     analises = analisar_portfolio(cotacoes, noticias)
