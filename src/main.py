@@ -27,6 +27,14 @@ def main():
     from src.noticias import buscar_todas_noticias, buscar_noticias_macro
     from src.analise import gerar_alertas, gerar_contexto_macro
     from src.notificacao import montar_mensagem, enviar_telegram, buscar_macro
+    try:
+        from src.extrator import reset_stats, get_stats, get_firecrawl_usage
+        _extrator_ok = True
+    except ImportError:
+        _extrator_ok = False
+
+    if _extrator_ok:
+        reset_stats()
 
     logger.info("=== Iniciando Monitor de Acoes ===")
 
@@ -54,6 +62,23 @@ def main():
 
     logger.info("Enviando via Telegram...")
     enviar_telegram(mensagem)
+
+    if _extrator_ok:
+        stats = get_stats()
+        fc_usado, fc_limite = get_firecrawl_usage()
+        logger.info("=== Stats de extracao de conteudo ===")
+        logger.info("  NewsAPI:       %d artigos", stats.get("newsapi", 0))
+        logger.info("  BeautifulSoup: %d artigos", stats.get("beautifulsoup", 0))
+        logger.info("  Firecrawl:     %d artigos", stats.get("firecrawl", 0))
+        logger.info("  Fallback:      %d artigos", stats.get("fallback", 0))
+        logger.info("  Firecrawl uso mensal: %d / %d", fc_usado, fc_limite)
+        print("\n========== STATS DE EXTRACAO ==========")
+        print("  NewsAPI:       {} artigos".format(stats.get("newsapi", 0)))
+        print("  BeautifulSoup: {} artigos".format(stats.get("beautifulsoup", 0)))
+        print("  Firecrawl:     {} artigos".format(stats.get("firecrawl", 0)))
+        print("  Fallback:      {} artigos".format(stats.get("fallback", 0)))
+        print("  Firecrawl uso mensal: {} / {}".format(fc_usado, fc_limite))
+        print("========================================\n")
 
     logger.info("=== Concluido com sucesso! ===")
 

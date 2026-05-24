@@ -30,6 +30,12 @@ ORIGEM_LABEL = {
     "macro_feed":    "Macro Feed",
 }
 
+GROQ_PALAVRAS_ARTIGO = 300
+GROQ_PALAVRAS_MACRO  = 200
+TOKEN_LIMITE_TOTAL   = 4000
+MAX_ARTIGOS_NORMAL   = 5
+MAX_ARTIGOS_REDUCAO  = 3
+
 
 def _extrair_json(texto):
     match = re.search(r"\{.*\}", texto, re.DOTALL)
@@ -41,14 +47,42 @@ def _extrair_json(texto):
     return {}
 
 
-def _formatar_noticias(ticker, noticias):
-    """Retorna ate 4 noticias com rotulo de origem para o prompt do Groq."""
-    items = noticias.get(ticker, [])[:4]
-    return [
-        "[{}] {}".format(ORIGEM_LABEL.get(n.get("origem", ""), "Web"), n["titulo"])
-        for n in items
-        if n.get("titulo")
-    ]
+def _contar_palavras(texto):
+    return len(texto.split()) if texto else 0
+
+
+def _truncar(texto, max_palavras):
+    palavras = texto.split()
+    if len(palavras) <= max_palavras:
+        return texto
+    return " ".join(palavras[:max_palavras]) + "..."
+
+
+def _formatar_noticias(ticker, noticias, max_artigos=MAX_ARTIGOS_NORMAL):
+    """
+    Retorna lista de dicts {fonte, conteudo, tipo} para o prompt do Groq.
+    Se artigo tem conteudo completo (>= 200 palavras, sem [resumo]) usa-o truncado a 300 palavras.
+    Caso contrario usa apenas o titulo.
+    """
+    items = noticias.get(ticker, [])[:max_artigos]
+    resultado = []
+    for n in items:
+        if not n.get("titulo"):
+            continue
+        fonte = ORIGEM_LABEL.get(n.get("origem", ""), "Web")
+        conteudo_raw = n.get("conteudo", "")
+        is_resumo = "[resumo]" in conteudo_raw if conteudo_raw else True
+        palavras = _contar_palavras(conteudo_raw)
+
+        if conteudo_raw and not is_resumo and palavras >= 200:
+            texto = _truncar(conteudo_raw, GROQ_PALAVRAS_ARTIGO)
+            tipo = "conteudo_completo"
+        else:
+            texto = n["titulo"]
+            tipo = "titulo_apenas"
+
+        resultado.append({"fonte": fonte, "conteudo": texto, "tipo": tipo})
+    return resultado
 
 
 def gerar_alertas(cotacoes, noticias):
@@ -73,9 +107,9 @@ def gerar_alertas(cotacoes, noticias):
 
         dados_prompt = []
         for ticker, d in candidatos.items():
-            news_list = _formatar_noticias(ticker, noticias)
+            news_list = _formatar_noticias(ticker, noticias, MAX_ARTIGOS_NORMAL)
             if not news_list:
-                logger.info("Sem noticias recentes para %s — alerta omitido", ticker)
+                logger.info("Sem noticias recentes para %s - alerta omitido", ticker)
                 continue
             dados_prompt.append({
                 "ticker":       ticker,
@@ -88,26 +122,70 @@ def gerar_alertas(cotacoes, noticias):
             resultado[mercado] = []
             continue
 
+        total_palavras = sum(
+            _contar_palavras(art["conteudo"])
+            for item in dados_prompt
+            for art in item["noticias"]
+        )
+        if total_palavras > TOKEN_LIMITE_TOTAL:
+            logger.info("Alertas %s: total %d palavras > %d, reduzindo para %d artigos/ticker",
+                        mercado, total_palavras, TOKEN_LIMITE_TOTAL, MAX_ARTIGOS_REDUCAO)
+            dados_prompt = []
+            for ticker, d in candidatos.items():
+                news_list = _formatar_noticias(ticker, noticias, MAX_ARTIGOS_REDUCAO)
+                if not news_list:
+                    continue
+                dados_prompt.append({
+                    "ticker":       ticker,
+                    "variacao_pct": round(d["variacao"], 2),
+                    "noticias":     news_list,
+                })
+
+        tem_conteudo = any(
+            art["tipo"] == "conteudo_completo"
+            for item in dados_prompt
+            for art in item["noticias"]
+        )
+
+        if tem_conteudo:
+            instrucao_analise = (
+                "Para cada ativo, as noticias podem conter o conteudo completo do artigo (tipo conteudo_completo) "
+                "ou apenas o titulo (tipo titulo_apenas). "
+                "Quando houver conteudo completo, faca uma analise detalhada em 3 pontos: "
+                "(1) fato principal, (2) impacto esperado no ativo, (3) risco ou oportunidade. "
+                "Quando houver apenas titulo, seja mais conciso (1-2 frases)."
+            )
+        else:
+            instrucao_analise = (
+                "As noticias disponiveis sao apenas titulos. "
+                "Escreva um alerta conciso em 1-2 frases em portugues para cada ativo."
+            )
+
         prompt = (
             "Voce e um analista financeiro senior. Para cada ativo abaixo com variacao >= 1%, "
-            "escreva um alerta em 2-3 frases em portugues explicando o movimento e seu contexto.\n\n"
+            "escreva um alerta em portugues explicando o movimento e seu contexto.\n\n"
             "REGRAS IMPORTANTES:\n"
-            "- Inclua APENAS ativos com variacao >= 1.5% OU com noticias negativas impactantes\n"
-            "- Se a lista 'noticias' de um ativo estiver vazia, NAO gere alerta para ele\n"
+            "- Inclua APENAS ativos com variacao >= 1.5%% OU com noticias negativas impactantes\n"
+            "- Se a lista noticias de um ativo estiver vazia, NAO gere alerta para ele\n"
             "- Nao invente informacoes que nao estejam nas noticias fornecidas\n"
-            "- Use o ticker exato, mencione o percentual e a causa principal\n\n"
-            "Mercado: {}\n"
-            "Candidatos:\n{}\n\n"
+            "- Use o ticker exato, mencione o percentual e a causa principal\n"
+            "- {instrucao}\n\n"
+            "Mercado: {mercado}\n"
+            "Candidatos:\n{dados}\n\n"
             "Responda APENAS com JSON valido, sem markdown:\n"
             "{{\"alertas\": [{{\"ticker\": \"...\", \"texto\": \"...\"}}]}}"
-        ).format(mercado, json.dumps(dados_prompt, ensure_ascii=False))
+        ).format(
+            instrucao=instrucao_analise,
+            mercado=mercado,
+            dados=json.dumps(dados_prompt, ensure_ascii=False),
+        )
 
         try:
             resp = client.chat.completions.create(
                 model=MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=1200,
+                max_tokens=1500,
             )
             dados_resp = _extrair_json(resp.choices[0].message.content)
             alertas = dados_resp.get("alertas", [])
@@ -127,6 +205,7 @@ def gerar_alertas(cotacoes, noticias):
 def gerar_contexto_macro(noticias_macro):
     """
     Gera 2 frases de contexto macro baseadas APENAS nas noticias fornecidas.
+    Usa conteudo completo quando disponivel (truncado a 200 palavras), senao titulo.
     Retorna string vazia se sem noticias suficientes.
     """
     if not noticias_macro:
@@ -135,13 +214,23 @@ def gerar_contexto_macro(noticias_macro):
 
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-    titulos = [
-        "[{}] {}".format(n.get("fonte", "web"), n.get("titulo", ""))
-        for n in noticias_macro[:8]
-        if n.get("titulo")
-    ]
+    itens_prompt = []
+    for n in noticias_macro[:8]:
+        if not n.get("titulo"):
+            continue
+        fonte = n.get("fonte", "web")
+        conteudo_raw = n.get("conteudo", "")
+        is_resumo = "[resumo]" in conteudo_raw if conteudo_raw else True
+        palavras = _contar_palavras(conteudo_raw)
 
-    if not titulos:
+        if conteudo_raw and not is_resumo and palavras >= 200:
+            texto = _truncar(conteudo_raw, GROQ_PALAVRAS_MACRO)
+        else:
+            texto = n.get("titulo", "")
+
+        itens_prompt.append("[{}] {}".format(fonte, texto))
+
+    if not itens_prompt:
         return ""
 
     prompt = (
@@ -151,14 +240,14 @@ def gerar_contexto_macro(noticias_macro):
         "Se as noticias nao permitirem um comentario util e embasado, "
         "responda apenas: Dados insuficientes para contexto macro.\n\n"
         "Noticias disponíveis:\n{}"
-    ).format("\n".join("- " + t for t in titulos))
+    ).format("\n".join("- " + t for t in itens_prompt))
 
     try:
         resp = client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=220,
+            max_tokens=280,
         )
         texto = resp.choices[0].message.content.strip()
         logger.info("Contexto macro gerado: %d chars", len(texto))

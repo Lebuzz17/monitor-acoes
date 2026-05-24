@@ -427,6 +427,14 @@ def buscar_noticias_ticker(ticker, eh_americano=True, av_cache=None, feeds_gerai
 
     origens = [ORIGEM_LABEL.get(n["origem"], n["origem"]) for n in top]
     logger.info("%s: %d noticias recentes (48h) %s", ticker, len(top), origens)
+    try:
+        from src.extrator import extrair_conteudo
+    except ImportError:
+        from extrator import extrair_conteudo
+    for n in top:
+        conteudo, fonte_ext = extrair_conteudo(n, ticker)
+        n["conteudo"] = conteudo
+        n["fonte_extracao"] = fonte_ext
     return top
 
 
@@ -506,4 +514,12 @@ def buscar_noticias_macro(max_total=8):
     todas.sort(key=lambda x: x["score_final"], reverse=True)
     top = todas[:max_total]
     logger.info("Noticias macro: %d selecionadas de %d apos filtro 48h", len(top), len(todas))
+    try:
+        from src.extrator import extrair_conteudo
+    except ImportError:
+        from extrator import extrair_conteudo
+    for n in top:
+        conteudo, fonte_ext = extrair_conteudo(n, "MACRO")
+        n["conteudo"] = conteudo
+        n["fonte_extracao"] = fonte_ext
     return top
