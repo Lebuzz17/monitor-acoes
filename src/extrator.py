@@ -30,8 +30,9 @@ FIRECRAWL_LOG = ROOT / "logs" / "firecrawl_usage.log"
 MIN_PALAVRAS   = 200
 MAX_PALAVRAS   = 800   # palavras armazenadas por artigo
 GROQ_PALAVRAS  = 300   # palavras enviadas ao Groq por artigo
-FIRECRAWL_LIMITE_MENSAL = 450
-FIRECRAWL_LIMITE_RUN    = 10
+FIRECRAWL_LIMITE_MENSAL   = 450
+FIRECRAWL_LIMITE_RUN      = 10   # budget por run para tickers do portfolio
+FIRECRAWL_LIMITE_RUN_MACRO = 8   # budget por run dedicado para noticias macro
 
 DOMINIOS_NOTICIAS = (
     "bloomberg.com,reuters.com,apnews.com,ft.com,"
@@ -42,13 +43,15 @@ DOMINIOS_NOTICIAS = (
 
 # ─── Estatisticas da sessao ───────────────────────────────────────────────────
 _stats = {"newsapi": 0, "beautifulsoup": 0, "firecrawl": 0, "fallback": 0}
-_fc_run_count = 0
+_fc_run_count       = 0   # portfolio
+_fc_run_count_macro = 0   # macro (budget separado)
 
 
 def reset_stats():
-    global _stats, _fc_run_count
+    global _stats, _fc_run_count, _fc_run_count_macro
     _stats = {"newsapi": 0, "beautifulsoup": 0, "firecrawl": 0, "fallback": 0}
-    _fc_run_count = 0
+    _fc_run_count       = 0
+    _fc_run_count_macro = 0
 
 
 def get_stats():
@@ -73,6 +76,113 @@ def _truncar(texto, max_p=MAX_PALAVRAS):
 def _limpar_html(texto):
     texto = re.sub(r"\s+", " ", texto)
     return texto.strip()
+
+
+def _limpar_markdown(texto):
+    """
+    Remove boilerplate de navegacao/UI do markdown gerado pelo Firecrawl.
+    Aplicado antes do truncamento para garantir que o conteudo real chega ao Groq.
+    Remove: links markdown isolados, imagens, botoes de UI, metadados de autor/data,
+    headers de governo (.gov), linhas curtas com colchetes.
+    Encontra onde o conteudo real comeca (primeira linha com > 10 palavras).
+    """
+    if not texto:
+        return texto
+
+    _re_link   = re.compile(r'^\s*\[.*?\]\(.*?\)\s*$')
+    _re_imagem = re.compile(r'^\s*!\[.*?\]\(.*?\)')
+    _re_meta   = re.compile(
+        r'^\s*(?:published|updated|editor\s|by\s+\w|'
+        r'view\s+all\s+comments|view\s+all\s+comments\s*\(|'
+        r'share\s*$|like\s*$|follow|advertisement|read\s+more|'
+        r'in\s+this\s+article)',
+        re.IGNORECASE,
+    )
+    _re_strip_md = re.compile(r'[\*\_`#]+')   # remove bold/italic/code markers p/ checks
+
+    _boilerplate = {
+        "skip to main content",
+        "official websites use .gov",
+        "here's how you know",
+        "an official website of the united states",
+        "secure .gov websites use https",
+        "share sensitive information only on official, secure websites.",
+        "main menu toggle button",
+        "main menu toggle buttonsectionssearch toggle button",
+        "search submit buttonsearch",
+        "searchsearch submit buttonsubmit",
+        "search submit button",
+        "last update:",
+        "toggle buttonsections",
+        "toggle button",
+        "sections",
+        "search toggle button",
+        "lock",
+        "locklocked padlock icon",
+    }
+    _boilerplate_prefixes = (
+        "skip to main",
+        "official websites use",
+        "secure .gov websites",
+        "here's how you know",
+        "an official website",
+        "share sensitive information",
+        "a .gov website belongs to",
+        ".gov website belongs to",
+        "website belongs to an official",
+        "toggle button",
+        "searchsearch",
+    )
+
+    linhas_limpas = []
+    em_branco_anterior = False
+
+    for linha in texto.splitlines():
+        s = linha.strip()
+
+        if not s:
+            if not em_branco_anterior:
+                linhas_limpas.append("")
+            em_branco_anterior = True
+            continue
+        em_branco_anterior = False
+
+        # link markdown isolado na linha
+        if _re_link.match(s):
+            continue
+        # imagem markdown
+        if _re_imagem.match(s):
+            continue
+        # linha curta (< 5 palavras) com colchete = botao/UI/contador
+        if len(s.split()) < 5 and "[" in s:
+            continue
+
+        # Versao da linha sem marcadores markdown para os checks de boilerplate
+        s_plain = _re_strip_md.sub("", s).strip().lower()
+
+        # boilerplate exato (na versao sem markdown)
+        if s_plain in _boilerplate:
+            continue
+        # boilerplate por prefixo (na versao sem markdown)
+        if any(s_plain.startswith(p) for p in _boilerplate_prefixes):
+            continue
+        # metadados de autor/data
+        if _re_meta.match(s):
+            continue
+
+        linhas_limpas.append(s)
+
+    # Encontrar onde o conteudo real comeca:
+    # primeira linha com > 10 palavras que nao seja um header markdown
+    inicio = 0
+    for i, linha in enumerate(linhas_limpas):
+        if linha and len(linha.split()) > 10 and not linha.startswith("#"):
+            inicio = i
+            break
+
+    resultado = "\n".join(linhas_limpas[inicio:]).strip()
+    # Fallback: se limpeza destruiu tudo, devolver texto original
+    return resultado if _contar_palavras(resultado) >= 50 else texto
 
 
 # ─── Contador Firecrawl ───────────────────────────────────────────────────────
@@ -227,8 +337,8 @@ def _via_beautifulsoup(link):
 
 # ─── Camada 3: Firecrawl ──────────────────────────────────────────────────────
 
-def _via_firecrawl(link):
-    global _fc_run_count
+def _via_firecrawl(link, is_macro=False):
+    global _fc_run_count, _fc_run_count_macro
     if not link:
         return None
 
@@ -242,10 +352,15 @@ def _via_firecrawl(link):
         logger.warning("Firecrawl desativado: limite mensal %d/%d", count_mensal, FIRECRAWL_LIMITE_MENSAL)
         return None
 
-    # Verificar budget por run
-    if _fc_run_count >= FIRECRAWL_LIMITE_RUN:
-        logger.debug("Firecrawl: budget por run atingido (%d)", FIRECRAWL_LIMITE_RUN)
-        return None
+    # Verificar budget por run (budgets separados para portfolio e macro)
+    if is_macro:
+        if _fc_run_count_macro >= FIRECRAWL_LIMITE_RUN_MACRO:
+            logger.debug("Firecrawl macro: budget por run atingido (%d)", FIRECRAWL_LIMITE_RUN_MACRO)
+            return None
+    else:
+        if _fc_run_count >= FIRECRAWL_LIMITE_RUN:
+            logger.debug("Firecrawl: budget por run atingido (%d)", FIRECRAWL_LIMITE_RUN)
+            return None
 
     try:
         from firecrawl import FirecrawlApp
@@ -261,10 +376,16 @@ def _via_firecrawl(link):
         else:
             content = str(result)
 
-        _fc_run_count += 1
+        if is_macro:
+            _fc_run_count_macro += 1
+            run_label = "macro {}/run".format(_fc_run_count_macro)
+        else:
+            _fc_run_count += 1
+            run_label = "{}/run".format(_fc_run_count)
         novo_count = _incrementar_contador_fc()
-        logger.info("Firecrawl: %d/run, %d/%d mensal", _fc_run_count, novo_count, FIRECRAWL_LIMITE_MENSAL)
+        logger.info("Firecrawl: %s, %d/%d mensal", run_label, novo_count, FIRECRAWL_LIMITE_MENSAL)
 
+        content = _limpar_markdown(content)
         if _contar_palavras(content) >= MIN_PALAVRAS:
             return _truncar(content)
         return None
@@ -303,7 +424,7 @@ def extrair_conteudo(noticia, ticker):
         return c, "beautifulsoup"
 
     # Camada 3: Firecrawl
-    c = _via_firecrawl(link)
+    c = _via_firecrawl(link, is_macro=(ticker == "MACRO"))
     if c:
         _stats["firecrawl"] += 1
         return c, "firecrawl"

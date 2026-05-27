@@ -234,11 +234,16 @@ def gerar_contexto_macro(noticias_macro):
         return ""
 
     prompt = (
-        "Com base APENAS nas seguintes noticias macroeconômicas recentes, "
-        "redija exatamente 2 frases de contexto macro relevantes para um investidor brasileiro. "
-        "Nao invente informacoes que nao estejam explicitamente nas noticias abaixo. "
-        "Se as noticias nao permitirem um comentario util e embasado, "
-        "responda apenas: Dados insuficientes para contexto macro.\n\n"
+        "Voce e um analista financeiro. Analise as noticias abaixo e escreva 1-2 frases "
+        "de contexto de mercado para um investidor brasileiro, priorizando os temas: "
+        "(1) mercados globais: S&P 500, Nasdaq, bolsas, volatilidade; "
+        "(2) politica monetaria: Fed, juros, inflacao; "
+        "(3) geopolitica: guerras, sancoes, tensoes; "
+        "(4) commodities: petroleo, minerio, ouro; "
+        "(5) eventos sobre o Brasil ou mercados emergentes. "
+        "Use APENAS informacoes explicitas nas noticias fornecidas. "
+        "Se nenhuma noticia tiver qualquer relevancia para mercados financeiros globais "
+        "ou para o Brasil, responda apenas: Dados insuficientes para contexto macro.\n\n"
         "Noticias disponíveis:\n{}"
     ).format("\n".join("- " + t for t in itens_prompt))
 
