@@ -22,3 +22,9 @@ build/
 .vscode/
 .idea/
 *.swp
+
+# Banco e backups locais
+data/
+*.db
+*.db-wal
+*.db-shm
