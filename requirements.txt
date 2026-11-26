@@ -10,3 +10,4 @@ newsapi-python>=0.2.7
 firecrawl-py>=4.0.0
 lxml>=6.1.1
 numpy>=1.26
+openpyxl>=3.1
