@@ -8,7 +8,9 @@ Regras (da politica):
 """
 
 import hashlib
+import io
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 import requests
@@ -27,6 +29,28 @@ class AprovacaoNecessaria(Exception):
 
 
 # ---------------------------------------------------------------- fontes
+def extrair_texto(conteudo: bytes) -> str:
+    """Texto pesquisavel do documento: PDF (pypdf), HTML (BeautifulSoup) ou texto puro."""
+    if conteudo[:5] == b"%PDF-":
+        from pypdf import PdfReader
+        return "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(conteudo)).pages)
+    try:
+        texto = conteudo.decode("utf-8")
+    except UnicodeDecodeError:
+        texto = conteudo.decode("latin-1")
+    cabeca = texto[:3000].lower()
+    if "<html" in cabeca or "<body" in cabeca or "<!doctype html" in cabeca:
+        from bs4 import BeautifulSoup
+        texto = BeautifulSoup(texto, "lxml").get_text(" ")
+    return texto
+
+
+def _normalizar(s: str) -> str:
+    """Minusculas, sem acentos e com espacos colapsados (PDFs quebram linhas/acentos de forma variada)."""
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    return " ".join(s.lower().split())
+
+
 def registrar_fonte(con: sqlite3.Connection, url: str, conteudo: bytes, origem: str,
                     pasta: Path | None = None) -> int:
     """Guarda uma copia local do documento (hash SHA-256) e registra em `fontes`."""
@@ -40,6 +64,7 @@ def registrar_fonte(con: sqlite3.Connection, url: str, conteudo: bytes, origem: 
     pasta.mkdir(parents=True, exist_ok=True)
     caminho = pasta / f"{sha[:16]}"
     caminho.write_bytes(conteudo)
+    Path(f"{caminho}.txt").write_text(extrair_texto(conteudo), encoding="utf-8")
     cur = con.execute("INSERT INTO fontes (url, sha256, caminho_local, origem) VALUES (?, ?, ?, ?)",
                       (url, sha, str(caminho), origem))
     con.commit()
@@ -53,17 +78,17 @@ def baixar_fonte(con: sqlite3.Connection, url: str, origem: str, pasta: Path | N
 
 
 def trecho_existe_na_fonte(con: sqlite3.Connection, fonte_id: int, trecho: str) -> bool:
-    """Confere que o trecho citado aparece no documento guardado (texto). Para PDFs/binarios a
-    verificacao e feita sobre o texto extraido antes de registrar (ver `registrar_fonte_texto`)."""
+    """Confere que o trecho citado aparece no texto extraido do documento guardado
+    (PDF, HTML ou texto), ignorando caixa, acentos e quebras de linha."""
     row = con.execute("SELECT caminho_local FROM fontes WHERE id = ?", (fonte_id,)).fetchone()
     if not row or not row["caminho_local"]:
         return False
+    txt = Path(f"{row['caminho_local']}.txt")
     try:
-        texto = Path(row["caminho_local"]).read_bytes().decode("utf-8", errors="ignore")
+        texto = txt.read_text(encoding="utf-8") if txt.exists() else             extrair_texto(Path(row["caminho_local"]).read_bytes())
     except OSError:
         return False
-    norm = lambda s: " ".join(s.lower().split())
-    return norm(trecho) in norm(texto)
+    return _normalizar(trecho) in _normalizar(texto)
 
 
 # ------------------------------------------------------------ valuations
@@ -147,6 +172,9 @@ def aprovar(con, valuation_id: int, por: str = "dono", motivo: str | None = None
 
 
 def reprovar(con, valuation_id: int, motivo: str) -> None:
+    v = con.execute("SELECT status FROM valuations WHERE id = ?", (valuation_id,)).fetchone()
+    if v is None or v["status"] != "rascunho":
+        raise ValueError("so valuation em rascunho pode ser reprovado")
     con.execute("UPDATE valuations SET status = 'arquivado', correcoes_dono = correcoes_dono + 1 WHERE id = ?",
                 (valuation_id,))
     con.execute("INSERT INTO memos (agente, ticker, tipo, texto) "

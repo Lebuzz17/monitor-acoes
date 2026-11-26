@@ -1,3 +1,5 @@
+import io
+
 import pytest
 
 from fundo import db
@@ -41,6 +43,46 @@ def test_trecho_precisa_constar_no_documento(con, tmp_path):
     reg.adicionar_premissa(con, v, "g", 0.045, "%", f, "A receita cresce 4,5% ao ano", "analista")
     with pytest.raises(reg.PremissaRecusada, match="nao consta"):
         reg.adicionar_premissa(con, v, "g2", 0.09, "%", f, "A receita cresce 9% ao ano", "analista")
+
+
+def _pdf_minimo(texto: str) -> bytes:
+    """PDF valido de uma pagina com o texto (Helvetica), montado a mao com tabela xref correta."""
+    nl = b"\n"
+    conteudo = f"BT /F1 12 Tf 72 720 Td ({texto}) Tj ET".encode("latin-1")
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+            b"/Resources << /Font << /F1 5 0 R >> >> >>",
+            b"<< /Length " + str(len(conteudo)).encode() + b" >>" + nl + b"stream" + nl + conteudo
+            + nl + b"endstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offs = b"%PDF-1.4" + nl, []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out))
+        out += f"{i} 0 obj".encode() + nl + o + nl + b"endobj" + nl
+    xref = len(out)
+    linhas = [b"xref", f"0 {len(objs) + 1}".encode(), b"0000000000 65535 f "]
+    linhas += [f"{o:010d} 00000 n ".encode() for o in offs]
+    linhas += [b"trailer", f"<< /Size {len(objs) + 1} /Root 1 0 R >>".encode(), b"startxref",
+               str(xref).encode(), b"%%EOF"]
+    return out + nl.join(linhas) + nl
+
+
+def test_trecho_em_pdf_e_html_e_aceito_ignorando_acento_e_quebra(con, tmp_path):
+    v = _val(con)
+    html = ("<html><body><p>A Receita Anual Permitida (RAP)\n"
+            " é reajustada pelo <b>IPCA</b>.</p></body></html>")
+    f = reg.registrar_fonte(con, "https://ri.exemplo/x.html", html.encode("utf-8"), "ri", tmp_path / "f")
+    reg.adicionar_premissa(con, v, "reajuste", 1.0, "x", f, "receita anual permitida (RAP) e reajustada pelo IPCA", "a")
+    f2 = reg.registrar_fonte(con, "https://ri.exemplo/r.pdf", _pdf_minimo("Capex previsto de R$ 500 milhoes em 2027"),
+                             "ri", tmp_path / "f")
+    reg.adicionar_premissa(con, v, "capex", 500.0, "R$ mi", f2, "capex previsto de R$ 500 milhoes", "a")
+
+
+def test_reprovar_so_rascunho(con, tmp_path):
+    v = _val(con); _com_premissa(con, tmp_path, v); reg.aprovar(con, v)
+    with pytest.raises(ValueError):
+        reg.reprovar(con, v, "x")
 
 
 # ---------------- aprovacao ----------------
@@ -145,6 +187,14 @@ def test_penalidades_de_liquidez_setor_e_recencia():
 def test_alvos_fora_de_ordem_geram_alerta():
     c = placar.Candidata("A", 30.0, 40.0, 20.0, 25.0, 3)
     assert any("fora de ordem" in a for a in placar.pontuar(c, 1).alertas)
+
+
+def test_retorno_negativo_nao_e_elegivel_e_penalidade_nao_o_melhora():
+    # antes da correcao, penalidades (x0,5) tornavam um retorno negativo 'menos ruim'
+    r = placar.pontuar(C("A", 24.0, dias_desde_aprovacao=10), 1)  # -20%
+    assert not r.elegivel and "nao positivo" in r.motivos_exclusao[0]
+    eleicao = placar.eleger([C("A", 24.0), C("B", 33.0)], 1)
+    assert [p.ticker for p in eleicao["ranking"]] == ["B"]
 
 
 def test_retorno_esperado_a_mao():

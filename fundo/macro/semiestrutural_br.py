@@ -19,8 +19,7 @@ Aderencia as respostas ao impulso publicadas pelo BC (IPCA acumulado em 4 trimes
 agregado; ver tests/test_macro.py):
     cambio +10%           BC +0,96 p.p. | aqui +0,87  (-9%)
     hiato +1%             BC +0,49 p.p. | aqui +0,53  (+8%)
-    Selic +1 p.p. x 4 tri BC -0,27 p.p. | aqui -0,47  (1,7x: sinal e ordem de grandeza certos,
-                                                      efeito dos juros superestimado)
+    Selic +1 p.p. x 4 tri BC -0,27 p.p. | aqui -0,32  (+19%: efeito dos juros um pouco maior)
 Divergencia residual provavel: expectativa de Selic (aqui, previsao perfeita da trajetoria
 imposta; no BC vem da Focus) e componentes omitidos. Use o modelo para direcao e ordem de
 grandeza de cenarios, nao para previsao pontual.
@@ -142,7 +141,8 @@ def simular(cal: Calibracao, est: Estado, exo: Exogenas | None = None, iteracoes
         E_prev, dif_prev, dcam_prev = est.exp12m, est.dif_juros, est.dcambio
         hist_pi = [est.pi4q / 4.0] * 3 + [est.pi]          # ultimos trimestres de IPCA
         hist_pl = [est.pi_livres] * 4                       # ultimos trimestres de livres
-        gaps: list = []
+        # hiato de juros do trimestre anterior ao inicio (o juro age com 1 trimestre de defasagem)
+        gaps: list = [est.selic - est.exp12m - r_star]
         h_hist = [est.hiato]
         for t in range(n):
             fut = pi_path[t + 1:t + 5]
@@ -154,7 +154,7 @@ def simular(cal: Calibracao, est: Estado, exo: Exogenas | None = None, iteracoes
             sel12 = float(np.concatenate([fut_i, np.full(4 - fut_i.size, selic_path[-1])]).mean())
             gap = sel12 - E - r_star                        # hiato de juros reais ex-ante
             u = BETA5 * u_prev + ch_is[t]
-            gap_ef = float(np.mean(gaps[-IS_GAP_JANELA:])) if gaps else gap
+            gap_ef = float(np.mean(gaps[-IS_GAP_JANELA:]))
             h = BETA1 * h_prev - BETA2 * gap_ef + BETA4 * hw[t] + BETA3 * fisc[t] + u
             taylor = THETA1 * i1 + THETA2 * i2 + (1 - THETA1 - THETA2) * (r_star + T + THETA3 * (E - T))
             i = float(imposta[t]) if not np.isnan(imposta[t]) else taylor
@@ -181,7 +181,12 @@ def simular(cal: Calibracao, est: Estado, exo: Exogenas | None = None, iteracoes
         pi_path, selic_path, out = o["pi"].copy(), o["selic"].copy(), o
         if mudou < 1e-10:
             break
+    else:
+        raise RuntimeError(f"modelo nao convergiu em {iteracoes} iteracoes (variacao residual {mudou:.2e})")
+    # cambio_acum: desvio acumulado em relacao a tendencia de PPC (componente 'real');
+    # cambio_nominal_acum: variacao nominal acumulada do R$/US$ (aprox. aditiva, em %)
     out["cambio_acum"] = np.cumsum(out["dcambio"] - dppp)
+    out["cambio_nominal_acum"] = np.cumsum(out["dcambio"])
     return out
 
 

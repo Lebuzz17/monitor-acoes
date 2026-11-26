@@ -29,12 +29,9 @@ def test_irf_hiato_bate_com_o_bc():
     assert _q4("hiato") == pytest.approx(0.49, rel=0.20)
 
 
-def test_irf_selic_sinal_e_ordem_de_grandeza():
-    # BC: +1 pp na Selic por 4 trimestres => -0,27 pp. Aqui o efeito e maior; exigimos sinal
-    # correto e fator entre 0,5x e 2x do BC (limitacao documentada no modulo).
-    v = _q4("selic")
-    assert v < 0
-    assert 0.5 * 0.27 <= abs(v) <= 2.0 * 0.27
+def test_irf_selic_bate_com_o_bc():
+    # BC: +1 pp na Selic por 4 trimestres => -0,27 pp (aqui -0,32; tolerancia de 30%)
+    assert _q4("selic") == pytest.approx(-0.27, rel=0.30)
 
 
 def test_repasse_cambial_por_componente():
@@ -62,3 +59,17 @@ def test_vetor_exogeno_com_tamanho_errado():
     cal = m.Calibracao()
     with pytest.raises(ValueError):
         m.simular(cal, m.equilibrio(cal), m.Exogenas(choque_cambio=np.zeros(3)))
+
+
+def test_nao_convergencia_e_erro_explicito():
+    cal = m.Calibracao()
+    with pytest.raises(RuntimeError, match="nao convergiu"):
+        m.simular(cal, m.equilibrio(cal), m.Exogenas(choque_cambio=np.r_[10.0, np.zeros(19)]), iteracoes=1)
+
+
+def test_cambio_nominal_inclui_tendencia_de_ppc():
+    cal = m.Calibracao()
+    r = m.simular(cal, m.equilibrio(cal))
+    dppp = (cal.meta - cal.meta_externa) / 4
+    assert r["cambio_nominal_acum"][3] == pytest.approx(4 * dppp)
+    assert r["cambio_acum"][3] == pytest.approx(0.0, abs=1e-9)

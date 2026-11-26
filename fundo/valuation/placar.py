@@ -52,6 +52,9 @@ def pontuar(c: Candidata, nivel_curriculo: int, limite_liquidez_dias: float = 5.
         raise ValueError("confianca deve ser 1..5")
     r = retorno_esperado(c.alvo_base, c.preco)
     res = Resultado(c.ticker, r, 0.0, True)
+    if r <= 0:
+        res.elegivel = False
+        res.motivos_exclusao.append(f"retorno esperado nao positivo ({r:.1%})")
     if c.nivel_dificuldade > nivel_curriculo:
         res.elegivel = False
         res.motivos_exclusao.append(f"nivel de dificuldade {c.nivel_dificuldade} acima do nivel {nivel_curriculo} da semana")

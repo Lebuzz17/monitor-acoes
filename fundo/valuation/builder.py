@@ -257,7 +257,10 @@ def construir(destino: str | Path, empresa: str, ticker: str, premissas: dict[st
     capa["A8"], capa["B8"] = "Preco-alvo ponderado", "=Valuation!B22"
     capa["A9"], capa["B9"] = "Preco atual", "=Valuation!C17"
     capa["A10"], capa["B10"] = "Retorno esperado", "=Valuation!B23"
-    capa["A11"], capa["B11"] = "Alvo Bear / Base / Bull", '=TEXT(Valuation!B16,"0.00")&" / "&TEXT(Valuation!C16,"0.00")&" / "&TEXT(Valuation!D16,"0.00")'
+    # tres celulas numericas (TEXT() com "0.00" quebra no Excel em portugues)
+    capa["A11"] = "Alvo Bear | Base | Bull"
+    for col, ref in (("B", "B16"), ("C", "C16"), ("D", "D16")):
+        capa[f"{col}11"] = f"=Valuation!{ref}"; capa[f"{col}11"].number_format = "#,##0.00"
     capa["A12"], capa["B12"] = "Checagem interna", "=Valuation!B24"
     capa["B8"].number_format = "#,##0.00"; capa["B9"].number_format = "#,##0.00"; capa["B10"].number_format = "0.0%"
     capa["A14"] = ("Modelo gerado por codigo. Premissas em azul na aba Premissas, cada uma com fonte, trecho e data. "

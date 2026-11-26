@@ -8,6 +8,7 @@ r* = juro real neutro (default 0,75%, proximo da mediana de longo prazo do SEP; 
 """
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 from fundo.macro import dados
 
@@ -33,7 +34,7 @@ def regra_taylor(pi: float, hiato: float, r_neutro: float = 0.75, meta: float = 
 
 
 def taylor_atual(r_neutro: float = 0.75) -> ResultadoTaylor:
-    ff = dados.fred("DFF")[-1][1]
+    ff = dados.fred("DFF", inicio=(date.today() - timedelta(days=30)).isoformat())[-1][1]
     pce = dados.fred("PCEPILFE", inicio="2023-01-01")
     pi = dados.variacao_12m(pce, 12)
     gdp = dados.fred("GDPC1", inicio="2015-01-01")

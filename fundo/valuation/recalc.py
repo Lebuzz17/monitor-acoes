@@ -39,7 +39,7 @@ def recalcular(origem: str | Path, destino: str | Path | None = None, timeout: i
         perfil = Path(tmp) / "perfil"
         saida = Path(tmp) / "saida"
         saida.mkdir()
-        cmd = [exe, f"-env:UserInstallation=file://{perfil.as_posix()}", "--headless", "--norestore",
+        cmd = [exe, f"-env:UserInstallation={perfil.as_uri()}", "--headless", "--norestore",
                "--calc", "--convert-to", "xlsx:Calc MS Excel 2007 XML", "--outdir", str(saida), str(origem)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         gerado = saida / origem.name

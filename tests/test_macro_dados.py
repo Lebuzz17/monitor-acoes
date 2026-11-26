@@ -29,6 +29,26 @@ def test_sgs_parseia_ordena_e_descarta_datas_futuras(monkeypatch):
     assert s == [(date(2020, 1, 1), 2.0), (date(2020, 1, 2), 2.5)]
 
 
+def test_cache_nao_colide_com_prefixo_longo_igual():
+    a = "x" * 200 + "A"
+    b = "x" * 200 + "B"
+    dados._cache_put(a, [1]); dados._cache_put(b, [2])
+    assert dados._cache_get(a, 60) == [1] and dados._cache_get(b, 60) == [2]
+
+
+def test_http_nao_repete_erro_4xx(monkeypatch):
+    chamadas = []
+
+    class R:
+        status_code = 400
+
+    monkeypatch.setattr(dados.requests, "get", lambda *a, **k: chamadas.append(1) or R())
+    monkeypatch.setattr(dados.time, "sleep", lambda s: None)
+    with pytest.raises(dados.DadosIndisponiveis):
+        dados._http("http://x")
+    assert len(chamadas) == 1
+
+
 def test_sgs_limite_de_ultimos():
     with pytest.raises(ValueError):
         dados.sgs(432, ultimos=50)
@@ -80,4 +100,11 @@ def test_ancora_reproduz_o_consenso():
     assert p["cenarios"]["base"]["h4"]["ipca_4q"] == pytest.approx(5.0, abs=1e-3)
     # ordem dos cenarios: bear tem mais inflacao e mais cambio que bull
     assert p["cenarios"]["bear"]["h4"]["ipca_4q"] > p["cenarios"]["bull"]["h4"]["ipca_4q"]
-    assert p["cenarios"]["bear"]["h4"]["cambio_acum_pct"] > p["cenarios"]["bull"]["h4"]["cambio_acum_pct"]
+    assert p["cenarios"]["bear"]["h4"]["cambio_nominal_pct"] > p["cenarios"]["bull"]["h4"]["cambio_nominal_pct"]
+
+
+def test_hiato_trimestral_descarta_trimestre_incompleto_e_serie_constante_da_zero():
+    serie = [(date(2010 + m // 12, m % 12 + 1, 1), 100.0) for m in range(14 * 12 + 2)]  # 2 meses sobrando
+    assert cenarios.hiato_trimestral(serie) == pytest.approx(0.0, abs=1e-9)
+    with pytest.raises(dados.DadosIndisponiveis):
+        cenarios.hiato_trimestral(serie[:20])

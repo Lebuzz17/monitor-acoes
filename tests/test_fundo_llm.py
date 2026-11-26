@@ -104,3 +104,27 @@ def test_prioridade_invalida(ctx):
     llm, *_ = ctx
     with pytest.raises(ValueError):
         llm.chamar("x", MSG, prioridade="vip")
+
+
+def test_limite_de_requisicoes_por_minuto(ctx, monkeypatch):
+    llm, cli, con, t = ctx
+    monkeypatch.setattr(config, "RPM", {M: 3})  # 3 x 1.0 de margem = 3 por minuto
+    inicio = t[0]
+    for _ in range(4):
+        llm.chamar("x", MSG, max_tokens=10)
+    assert t[0] - inicio >= 55  # a 4a chamada esperou a janela de 1 minuto
+
+
+def test_resposta_vazia_conta_na_cota_e_levanta(ctx):
+    from fundo.llm import RespostaVazia
+    llm, cli, con, _ = ctx
+
+    class Vazio(Falso):
+        def completar(self, *a):
+            return Resposta("   ", M, 100, 800)
+
+    llm._cliente = Vazio()
+    with pytest.raises(RespostaVazia):
+        llm.chamar("x", MSG, max_tokens=800)
+    row = con.execute("SELECT tokens_out, ok, erro FROM llm_usage").fetchone()
+    assert (row["tokens_out"], row["ok"], row["erro"]) == (800, 1, "resposta vazia")

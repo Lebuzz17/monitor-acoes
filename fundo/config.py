@@ -12,7 +12,8 @@ TIMEZONE = "America/Sao_Paulo"
 # Dinheiro real NAO existe nesta versao: so entra numa fase futura, atras de
 # uma chave que so o dono liga (FUNDO_DINHEIRO_REAL, ainda sem uso no codigo).
 MODO = os.getenv("FUNDO_MODO", "paper")
-assert MODO in ("paper", "testnet"), "modo invalido: dinheiro real nao e suportado"
+if MODO not in ("paper", "testnet"):  # nao usar assert: python -O desligaria a trava
+    raise RuntimeError(f"FUNDO_MODO={MODO!r} invalido: so 'paper' ou 'testnet' (dinheiro real nao e suportado)")
 
 # --- Groq (nomes ficam aqui porque o Groq troca/aposenta modelos) -----------
 MODELOS = {
@@ -34,6 +35,9 @@ LIMITES = {
     "openai/gpt-oss-20b": (8000, 1000, 200_000),
     "qwen/qwen3.8-27b": (8000, 1000, 200_000),
 }
+# requisicoes por minuto (console do Groq: 30 em todos os modelos de chat)
+RPM = {}
+RPM_PADRAO = 30
 LIMITE_PADRAO = (6000, 1000, 100_000)  # modelo desconhecido: conservador
 MARGEM_SEGURANCA = 0.9  # usa no maximo 90% de cada limite
 

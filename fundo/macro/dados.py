@@ -9,6 +9,7 @@ se uma fonte falhar, a funcao levanta DadosIndisponiveis e quem chama mostra "n/
 """
 
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -43,8 +44,13 @@ class DadosIndisponiveis(Exception):
     pass
 
 
+def _arquivo_cache(chave: str) -> Path:
+    # hash da chave inteira: nomes truncados podiam colidir entre consultas diferentes
+    return CACHE_DIR / (hashlib.sha256(chave.encode("utf-8")).hexdigest()[:32] + ".json")
+
+
 def _cache_get(chave: str, ttl: int):
-    p = CACHE_DIR / (chave.replace("/", "_")[:150] + ".json")
+    p = _arquivo_cache(chave)
     if p.exists() and time.time() - p.stat().st_mtime < ttl:
         try:
             return json.loads(p.read_text(encoding="utf-8"))
@@ -56,7 +62,7 @@ def _cache_get(chave: str, ttl: int):
 def _cache_put(chave: str, dados) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (CACHE_DIR / (chave.replace("/", "_")[:150] + ".json")).write_text(
+        _arquivo_cache(chave).write_text(
             json.dumps(dados), encoding="utf-8")
     except OSError as exc:  # cache e opcional
         logger.warning("cache nao gravado: %s", exc)
@@ -71,6 +77,8 @@ def _http(url: str, params: dict | None = None, tentativas: int = 3) -> requests
             if r.status_code == 200:
                 return r
             ultimo = f"HTTP {r.status_code}"
+            if 400 <= r.status_code < 500 and r.status_code != 429:
+                break  # erro do pedido: repetir nao adianta
         except requests.RequestException as exc:
             ultimo = str(exc)
         time.sleep(2 * (i + 1))

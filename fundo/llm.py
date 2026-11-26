@@ -29,6 +29,10 @@ class SemCota(Exception):
     """Nenhum modelo tem cota para esta chamada agora."""
 
 
+class RespostaVazia(Exception):
+    """O modelo consumiu tokens mas nao devolveu texto (ex.: raciocinio esgotou max_tokens)."""
+
+
 class Resposta:
     def __init__(self, texto: str, modelo: str, tokens_in: int, tokens_out: int):
         self.texto = texto
@@ -63,7 +67,7 @@ class ClienteGroq:
 
 def estimar_tokens(mensagens: list[dict]) -> int:
     """Estimativa grosseira (~3,5 caracteres por token em portugues)."""
-    return int(sum(len(m.get("content", "")) for m in mensagens) / 3.5) + 8 * len(mensagens)
+    return int(sum(len(m.get("content") or "") for m in mensagens) / 3.5) + 8 * len(mensagens)
 
 
 class LLM:
@@ -75,6 +79,7 @@ class LLM:
         self._relogio = relogio
         self._dormir = dormir
         self._janela: dict[str, list[tuple[float, int]]] = {}  # modelo -> [(ts, tokens)]
+        self._reqs: dict[str, list[float]] = {}                 # modelo -> [ts] (limite por minuto)
 
     @property
     def cliente(self) -> Cliente:
@@ -129,8 +134,14 @@ class LLM:
         tpm = self._limites(modelo)[0]
         if tokens > tpm:
             raise SemCota(f"chamada de ~{tokens} tokens excede o limite por minuto ({tpm}) de {modelo}")
-        while self._tpm_usado(modelo) + tokens > tpm:
+        rpm = int(config.RPM.get(modelo, config.RPM_PADRAO) * config.MARGEM_SEGURANCA)
+        while True:
+            agora = self._relogio()
+            self._reqs[modelo] = [t for t in self._reqs.get(modelo, []) if agora - t < 60]
+            if self._tpm_usado(modelo) + tokens <= tpm and len(self._reqs[modelo]) < rpm:
+                break
             self._dormir(5)
+        self._reqs[modelo].append(self._relogio())
 
     def _registrar(self, modelo, tarefa, prioridade, tin, tout, ok=1, erro=None):
         self.con.execute(
@@ -166,6 +177,12 @@ class LLM:
                 ultimo_erro = exc
                 continue
             self._janela.setdefault(modelo, []).append((self._relogio(), r.tokens_in + r.tokens_out))
+            if not (r.texto or "").strip():
+                # tokens foram gastos (conta na cota), mas nao ha resposta util
+                self._registrar(modelo, tarefa, prioridade, r.tokens_in, r.tokens_out, ok=1,
+                                erro="resposta vazia")
+                raise RespostaVazia(f"{modelo} nao devolveu texto em '{tarefa}' (usou {r.tokens_out} "
+                                    f"tokens de saida); aumente max_tokens ou reduza a tarefa")
             self._registrar(modelo, tarefa, prioridade, r.tokens_in, r.tokens_out)
             return r
         if ultimo_erro:

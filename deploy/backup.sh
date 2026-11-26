@@ -9,6 +9,10 @@ mkdir -p db modelos
 if [ -f "$APP/data/fundo.db" ]; then
   sqlite3 "$APP/data/fundo.db" ".backup '$BKP/db/fundo.db'"
 fi
+if [ -d "$APP/data/fontes" ]; then   # copias dos documentos citados nas premissas (auditoria)
+  mkdir -p fontes
+  rsync -a "$APP/data/fontes/" "$BKP/fontes/"
+fi
 if [ -d "$APP/valuation/models" ]; then
   rsync -a --delete "$APP/valuation/models/" "$BKP/modelos/" 2>/dev/null || cp -r "$APP/valuation/models/." "$BKP/modelos/"
 fi
