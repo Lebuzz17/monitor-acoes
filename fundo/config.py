@@ -16,20 +16,23 @@ assert MODO in ("paper", "testnet"), "modo invalido: dinheiro real nao e suporta
 
 # --- Groq (nomes ficam aqui porque o Groq troca/aposenta modelos) -----------
 MODELOS = {
-    "triagem": os.getenv("FUNDO_MODELO_TRIAGEM", "llama-3.1-8b-instant"),
-    "grande": os.getenv("FUNDO_MODELO_GRANDE", "llama-3.3-70b-versatile"),
+    "triagem": os.getenv("FUNDO_MODELO_TRIAGEM", "openai/gpt-oss-20b"),
+    "grande": os.getenv("FUNDO_MODELO_GRANDE", "openai/gpt-oss-120b"),
 }
 # Rodizio entre modelos grandes: cada modelo tem cota diaria propria no Groq.
 # Preencher na Fase 0 com o que a conta realmente lista (client.models.list()).
 MODELOS_GRANDES_RODIZIO = [
-    m for m in os.getenv("FUNDO_MODELOS_RODIZIO", "llama-3.3-70b-versatile").split(",") if m
+    m for m in os.getenv("FUNDO_MODELOS_RODIZIO", "openai/gpt-oss-120b,qwen/qwen3.8-27b").split(",") if m
 ]
 
 # Limites do plano gratis (CONFIRMAR no console do Groq; fontes divergem).
 LIMITES = {
     # modelo: (tokens por minuto, requisicoes por dia, tokens por dia)
-    "llama-3.3-70b-versatile": (6000, 1000, 100_000),
-    "llama-3.1-8b-instant": (6000, 14_400, 500_000),
+    # Conservador ate confirmar no console: em 2026-11 a conta lista gpt-oss e qwen;
+    # os llama antigos (3.1-8b, 3.3-70b) nao existem mais para esta conta.
+    "openai/gpt-oss-120b": (6000, 1000, 100_000),
+    "openai/gpt-oss-20b": (6000, 1000, 100_000),
+    "qwen/qwen3.8-27b": (6000, 1000, 100_000),
 }
 LIMITE_PADRAO = (6000, 1000, 100_000)
 MARGEM_SEGURANCA = 0.9  # usa no maximo 90% de cada limite
