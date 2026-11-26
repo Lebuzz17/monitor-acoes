@@ -1,8 +1,8 @@
-# Política de Investimento do Fundo — RASCUNHO v0
+# Política de Investimento do Fundo — v1 (aprovada)
 
-> **Status: rascunho, NÃO vigente.** Todos os números abaixo são *propostas* para o dono aprovar ou
-> alterar. Enquanto não houver aprovação registrada (data + versão no fim deste arquivo), o motor de
-> execução não opera. Tudo é **paper/testnet**; dinheiro real só existe atrás de uma chave que só o
+> **Status: vigente desde 2026-11-26**, aprovada pelo dono sem alterações sobre a v0. Os números
+> abaixo, antes chamados de "propostas", são os limites em vigor; mudar qualquer um exige nova
+> versão aprovada. Tudo é **paper/testnet**; dinheiro real só existe atrás de uma chave que só o
 > dono liga, numa fase futura.
 
 ## 1. Objetivo e natureza
@@ -89,4 +89,6 @@
 
 ---
 
-**Aprovação:** _(pendente)_ — versão v0, sem data.
+**Aprovação:** dono (Leonardo), 2026-11-26, versão v1 = v0 sem alterações
+(capital R$ 100.000; benchmark 50% Ibovespa / 25% S&P 500 em BRL / 15% CDI / 10% Bitcoin em BRL;
+limites e modo crise como acima). Revisão obrigatória a cada trimestre.

@@ -28,13 +28,13 @@ MODELOS_GRANDES_RODIZIO = [
 # Limites do plano gratis (CONFIRMAR no console do Groq; fontes divergem).
 LIMITES = {
     # modelo: (tokens por minuto, requisicoes por dia, tokens por dia)
-    # Conservador ate confirmar no console: em 2026-11 a conta lista gpt-oss e qwen;
-    # os llama antigos (3.1-8b, 3.3-70b) nao existem mais para esta conta.
-    "openai/gpt-oss-120b": (6000, 1000, 100_000),
-    "openai/gpt-oss-20b": (6000, 1000, 100_000),
-    "qwen/qwen3.8-27b": (6000, 1000, 100_000),
+    # Confirmado no console do Groq em 2026-11-26 (30 req/min em todos).
+    # Os llama antigos (3.1-8b, 3.3-70b) nao existem mais para esta conta.
+    "openai/gpt-oss-120b": (8000, 1000, 200_000),
+    "openai/gpt-oss-20b": (8000, 1000, 200_000),
+    "qwen/qwen3.8-27b": (8000, 1000, 200_000),
 }
-LIMITE_PADRAO = (6000, 1000, 100_000)
+LIMITE_PADRAO = (6000, 1000, 100_000)  # modelo desconhecido: conservador
 MARGEM_SEGURANCA = 0.9  # usa no maximo 90% de cada limite
 
 # Cotas internas (tokens/dia, somadas sobre todos os modelos)
